@@ -35,6 +35,8 @@ CHAT_ARCHIVE_DIR = RUN_DATA_DIR / "chat_archive"
 SYNC_HISTORY_DIR = RUN_DATA_DIR / "sync_history"
 SNAPSHOTS_DIR = RUN_DATA_DIR / "snapshots"
 TODAY_WINDOW_ARCHIVE_DIR = RUN_DATA_DIR / "today_window_archive"
+ADJUST_INPUT_FILE = BASE_DIR / "adjust.md"
+LEGACY_INCIDENT_INPUT_FILE = RUN_DATA_DIR / "incident_input.md"
 
 TODAY_WINDOW_FILE = BASE_DIR / "today_window.md"
 
@@ -273,6 +275,16 @@ def ensure_structure() -> None:
 
     if not FEEDBACK_JSONL.exists():
         FEEDBACK_JSONL.write_text("", encoding="utf-8")
+
+    if not ADJUST_INPUT_FILE.exists():
+        if LEGACY_INCIDENT_INPUT_FILE.exists():
+            shutil.copy2(LEGACY_INCIDENT_INPUT_FILE, ADJUST_INPUT_FILE)
+        else:
+            ADJUST_INPUT_FILE.write_text(
+            "# Incident Input\n\n"
+            "在这里写今天突发情况，例如：临时会议、身体不适、外出、截止时间变化等。\n",
+            encoding="utf-8",
+            )
 
 
 def load_env_file(env_path: Path) -> None:
@@ -552,6 +564,63 @@ def build_weekly_review_messages(start_date: dt.date, end_date: dt.date) -> List
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, indent=2)},
     ]
+
+
+def build_adjust_today_messages(target_date: dt.date, incident_text: str, current_plan: str, today_window: str) -> List[Dict[str, str]]:
+    profile = read_text_if_exists(PROFILE_FILE)
+    goals = read_text_if_exists(GOALS_FILE)
+    preferences = read_text_if_exists(PREFERENCES_FILE)
+    fixed_events = read_text_if_exists(FIXED_EVENTS_FILE)
+    today_notes = read_text_if_exists(TODAY_NOTES_FILE)
+    state = read_text_if_exists(STATE_FILE)
+    feedback = load_feedback(limit=14)
+
+    system_prompt = (
+        "You are a practical daily replanning assistant. "
+        "Given unexpected incidents, adjust today's plan realistically while preserving priorities."
+    )
+
+    user_payload = {
+        "target_date": target_date.isoformat(),
+        "incident_text": incident_text,
+        "current_plan_markdown": current_plan,
+        "today_window_markdown": today_window,
+        "local_context": {
+            "profile_md": profile,
+            "goals_md": goals,
+            "preferences_md": preferences,
+            "fixed_events_md": fixed_events,
+            "today_notes_md": today_notes,
+            "state_md": state,
+        },
+        "recent_feedback": feedback,
+        "instructions": [
+            "Adjust only today's plan.",
+            "Keep priorities but reduce overload when needed.",
+            "Return Markdown in Chinese with these sections exactly:",
+            "1) # 今日调整计划（YYYY-MM-DD）",
+            "2) ## 调整依据",
+            "3) ## 时间块安排",
+            "4) ## 今日三件最重要的事",
+            "5) ## 风险与备选方案",
+            "6) ## 晚间复盘提示",
+            "For 时间块安排, use a table: 时间 | 任务 | 说明.",
+        ],
+    }
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, indent=2)},
+    ]
+
+
+def resolve_input_file(path_text: str | None) -> Path:
+    if not path_text:
+        return ADJUST_INPUT_FILE
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path
 
 
 def extract_json_object(raw_text: str) -> Dict[str, Any]:
@@ -1339,6 +1408,48 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
     print(f"\nSaved weekly review to: {out_path}")
 
 
+def cmd_adjust_today(args: argparse.Namespace) -> None:
+    ensure_structure()
+    target_date = dt.datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else dt.date.today()
+
+    input_path = resolve_input_file(args.input_file)
+    if not input_path.exists():
+        raise RuntimeError(f"Input file not found: {input_path}")
+
+    incident_text = read_text_if_exists(input_path)
+    if not incident_text:
+        raise RuntimeError(f"Input file is empty: {input_path}")
+
+    plan_path = DAILY_PLAN_DIR / f"{target_date.isoformat()}.md"
+    current_plan = read_text_if_exists(plan_path)
+    today_window = read_text_if_exists(TODAY_WINDOW_FILE)
+
+    messages = build_adjust_today_messages(target_date, incident_text, current_plan, today_window)
+    updated_plan = deepseek_chat(messages, model=args.model, temperature=args.temperature)
+
+    if plan_path.exists():
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = SNAPSHOTS_DIR / f"daily_{target_date.isoformat()}_before_adjust_{stamp}.md"
+        backup_path.write_text(current_plan + "\n", encoding="utf-8")
+
+    plan_path.write_text(updated_plan.strip() + "\n", encoding="utf-8")
+    window_path = fill_today_window_from_plan(target_date, updated_plan)
+
+    sync_log = write_sync_history(
+        {
+            "timestamp": now_text(),
+            "source": "adjust-today",
+            "date": target_date.isoformat(),
+            "input_file": str(input_path),
+        }
+    )
+
+    print(updated_plan)
+    print(f"\nAdjusted plan saved to: {plan_path}")
+    print(f"Updated today window: {window_path}")
+    print(f"Sync history: {sync_log}")
+
+
 def run_cleanup(keep_days: int, keep_feedback: int, keep_chat_sections: int) -> Dict[str, int]:
     removed = 0
     removed += prune_old_files(DAILY_PLAN_DIR, keep_days=keep_days)
@@ -1481,6 +1592,22 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
         help="Sampling temperature",
     )
     p_weekly.set_defaults(func=cmd_weekly_review)
+
+    p_adjust = sub.add_parser("adjust-today", help="Adjust today's plan and today_window based on an incident file")
+    p_adjust.add_argument("--input-file", help="Incident/context file path; default is ./adjust.md")
+    p_adjust.add_argument("--date", help="Target date in YYYY-MM-DD; default is today")
+    p_adjust.add_argument(
+        "--model",
+        default=cfg_get(config, "model", "default_model", DEFAULT_MODEL),
+        help="DeepSeek model name",
+    )
+    p_adjust.add_argument(
+        "--temperature",
+        type=float,
+        default=cfg_get(config, "model", "plan_temperature", 0.3),
+        help="Sampling temperature",
+    )
+    p_adjust.set_defaults(func=cmd_adjust_today)
 
     p_auto = sub.add_parser("autopilot", help="Run daily pipeline: sync chat, plan next day, refresh today window")
     p_auto.add_argument("--current-date", help="Current date in YYYY-MM-DD; default is today")

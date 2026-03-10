@@ -93,6 +93,27 @@ python3 scheduler_agent.py window-refresh --date 2026-03-10
 - `run_data/today_window_archive/`
 - 新的 `today_window.md`
 
+## 5.5) adjust-today
+
+用途：当日出现突发情况时，根据指定文件重排“今天”的计划，并同步更新 `today_window.md` 勾选项。
+
+```bash
+python3 scheduler_agent.py adjust-today
+python3 scheduler_agent.py adjust-today --input-file ./adjust.md
+python3 scheduler_agent.py adjust-today --date 2026-03-12
+```
+
+常用参数：
+- `--input-file`：突发情况输入文件路径（默认 `./adjust.md`）
+- `--date`：目标日期（默认今天）
+- `--model`
+- `--temperature`
+
+输出：
+- 覆盖更新 `plans/daily/YYYY-MM-DD.md`
+- 自动更新 `today_window.md` 勾选任务
+- 写入 `run_data/sync_history/*.jsonl`
+
 ## 6) weekly-review
 
 用途：基于过去 N 天计划与反馈生成周复盘。

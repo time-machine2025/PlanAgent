@@ -64,6 +64,7 @@ python3 scheduler_agent.py init
 
 ```bash
 python3 scheduler_agent.py sync-chat --plan-after
+python3 scheduler_agent.py adjust-today
 python3 scheduler_agent.py window-refresh
 python3 scheduler_agent.py weekly-review
 python3 scheduler_agent.py autopilot
@@ -79,6 +80,7 @@ python3 scheduler_agent.py reset-data --yes
 - `sync-chat` 会读取 `today_window.md` 里的 `## Sync Input` 区域，提取信息后写入 `user_data/` 和 `run_data/`。
 - 模型在生成计划与周复盘时会读取 `user_data/state.md` 作为额外约束上下文。
 - 生成日计划时，系统会自动把计划任务填入 `today_window.md` 的勾选区（用于打勾追踪完成情况）。
+- `adjust-today` 默认读取根目录 `adjust.md`，根据其中突发情况重排当天计划，并同步更新 `today_window.md` 勾选任务。
 - `window-refresh` 会归档旧 `today_window.md` 并生成下一天窗口。
 - `weekly-review` 会基于过去数据产出周复盘到 `plans/weekly/`。
 - `autopilot` 一键串联日流程（同步 -> 次日计划 -> 刷新窗口，可选周复盘）。
