@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+.DS_Store
+
+# Runtime and personal planning data
+data/**
+!data/.gitkeep
+!data/README.md
