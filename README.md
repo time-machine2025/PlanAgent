@@ -109,11 +109,6 @@ pip install -e .
 schedule-agent --help
 ```
 
-## Security Notes
-
-- 不要上传 `.env`
-- 不要上传 `data/` 下的个人计划与反馈内容
-- 分享仓库前，先检查 `git status` 与 `git diff --cached`
 
 ## License
 
