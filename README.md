@@ -75,30 +75,6 @@ python3 scheduler_agent.py status
 
 ## 发布到 GitHub
 
-### 1. 初始化仓库并提交
-
-```bash
-git init
-git add .
-git commit -m "Initial commit: daily schedule agent"
-```
-
-### 2. 绑定远程仓库
-
-把 `<your-user>` 和 `<your-repo>` 替换成你的信息：
-
-```bash
-git branch -M main
-git remote add origin git@github.com:<your-user>/<your-repo>.git
-git push -u origin main
-```
-
-如果你使用 HTTPS：
-
-```bash
-git remote add origin https://github.com/<your-user>/<your-repo>.git
-git push -u origin main
-```
 
 ## Packaging (optional)
 
