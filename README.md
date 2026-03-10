@@ -73,8 +73,6 @@ python3 scheduler_agent.py status
 
 说明：`data/` 下的运行时文件默认不进入 Git，避免上传隐私信息。
 
-## 发布到 GitHub
-
 
 ## Packaging (optional)
 
