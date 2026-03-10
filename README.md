@@ -16,6 +16,7 @@
 │   ├── preferences.md         # 用户偏好
 │   ├── fixed_events.md        # 固定日程
 │   └── today_notes.md         # 临时约束/补充
+│   └── state.md               # 近期/长期状态与注意事项
 │
 ├── plans/                     # 计划输出（可被查看/编辑）
 │   ├── monthly/
@@ -76,6 +77,7 @@ python3 scheduler_agent.py reset-data --yes
 
 说明：
 - `sync-chat` 会读取 `today_window.md` 里的 `## Sync Input` 区域，提取信息后写入 `user_data/` 和 `run_data/`。
+- 模型在生成计划与周复盘时会读取 `user_data/state.md` 作为额外约束上下文。
 - 生成日计划时，系统会自动把计划任务填入 `today_window.md` 的勾选区（用于打勾追踪完成情况）。
 - `window-refresh` 会归档旧 `today_window.md` 并生成下一天窗口。
 - `weekly-review` 会基于过去数据产出周复盘到 `plans/weekly/`。

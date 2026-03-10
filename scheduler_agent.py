@@ -43,6 +43,7 @@ GOALS_FILE = USER_DATA_DIR / "goals.md"
 PREFERENCES_FILE = USER_DATA_DIR / "preferences.md"
 FIXED_EVENTS_FILE = USER_DATA_DIR / "fixed_events.md"
 TODAY_NOTES_FILE = USER_DATA_DIR / "today_notes.md"
+STATE_FILE = USER_DATA_DIR / "state.md"
 
 LEGACY_DATA_DIR = BASE_DIR / "data"
 LEGACY_CHAT_WINDOW_FILE = LEGACY_DATA_DIR / "chat_window.md"
@@ -152,6 +153,17 @@ def default_user_files() -> Dict[Path, str]:
         PREFERENCES_FILE: "# Preferences\n\n- Preferred schedule style:\n- Break frequency:\n- Deep work duration:\n",
         FIXED_EVENTS_FILE: "# Fixed Events\n\n- 09:30-10:00 Daily standup\n",
         TODAY_NOTES_FILE: "# Today Notes\n\n- Any temporary constraints or special events today.\n",
+        STATE_FILE: (
+            "# State\n\n"
+            "## Short-term (1-2 weeks)\n"
+            "- \n\n"
+            "## Long-term (1-3 months)\n"
+            "- \n\n"
+            "## Risks\n"
+            "- \n\n"
+            "## Adjustment Rules\n"
+            "- \n"
+        ),
     }
 
 
@@ -185,6 +197,7 @@ def migrate_legacy_data() -> None:
         (LEGACY_DATA_DIR / "preferences.md", PREFERENCES_FILE),
         (LEGACY_DATA_DIR / "fixed_events.md", FIXED_EVENTS_FILE),
         (LEGACY_DATA_DIR / "today_notes.md", TODAY_NOTES_FILE),
+        (LEGACY_DATA_DIR / "state.md", STATE_FILE),
         (LEGACY_DATA_DIR / "feedback_log.jsonl", FEEDBACK_JSONL),
         (LEGACY_DATA_DIR / "today_window.md", TODAY_WINDOW_FILE),
         (LEGACY_CHAT_WINDOW_FILE, TODAY_WINDOW_FILE),
@@ -446,6 +459,7 @@ def build_messages(target_date: dt.date) -> List[Dict[str, str]]:
     preferences = read_text_if_exists(PREFERENCES_FILE)
     fixed_events = read_text_if_exists(FIXED_EVENTS_FILE)
     today_notes = read_text_if_exists(TODAY_NOTES_FILE)
+    state = read_text_if_exists(STATE_FILE)
 
     feedback = load_feedback(limit=14)
     plans = load_recent_plans(limit=7)
@@ -464,6 +478,7 @@ def build_messages(target_date: dt.date) -> List[Dict[str, str]]:
             "preferences_md": preferences,
             "fixed_events_md": fixed_events,
             "today_notes_md": today_notes,
+            "state_md": state,
         },
         "recent_feedback": feedback,
         "recent_plans": plans,
@@ -495,6 +510,7 @@ def build_weekly_review_messages(start_date: dt.date, end_date: dt.date) -> List
     preferences = read_text_if_exists(PREFERENCES_FILE)
     fixed_events = read_text_if_exists(FIXED_EVENTS_FILE)
     today_notes = read_text_if_exists(TODAY_NOTES_FILE)
+    state = read_text_if_exists(STATE_FILE)
 
     feedback = load_feedback_between(start_date, end_date)
     plans = load_plans_between(start_date, end_date)
@@ -515,6 +531,7 @@ def build_weekly_review_messages(start_date: dt.date, end_date: dt.date) -> List
             "preferences_md": preferences,
             "fixed_events_md": fixed_events,
             "today_notes_md": today_notes,
+            "state_md": state,
         },
         "plans": plans,
         "feedback": feedback,
@@ -575,6 +592,7 @@ def build_chat_extract_messages(chat_text: str) -> List[Dict[str, str]]:
         "preferences_updates": ["string"],
         "fixed_events_updates": ["string"],
         "today_notes_updates": ["string"],
+        "state_updates": ["string"],
         "feedback": {
             "date": "YYYY-MM-DD or empty",
             "completion": "string",
@@ -713,6 +731,7 @@ def parse_daily_template(form_text: str) -> Dict[str, Any]:
         "preferences_updates": preference_tweaks,
         "fixed_events_updates": fixed_events,
         "today_notes_updates": constraints,
+        "state_updates": [],
         "feedback": feedback,
         "summary": "parsed from daily template",
     }
@@ -725,6 +744,7 @@ def merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[
         "preferences_updates": [],
         "fixed_events_updates": [],
         "today_notes_updates": [],
+        "state_updates": [],
         "feedback": {
             "date": "",
             "completion": "",
@@ -740,6 +760,7 @@ def merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[
         "preferences_updates",
         "fixed_events_updates",
         "today_notes_updates",
+        "state_updates",
     ]
 
     for key in list_keys:
@@ -799,6 +820,7 @@ def apply_chat_updates(extracted: Dict[str, Any]) -> List[str]:
     preferences_updates = extracted.get("preferences_updates") or []
     fixed_events_updates = extracted.get("fixed_events_updates") or []
     today_notes_updates = extracted.get("today_notes_updates") or []
+    state_updates = extracted.get("state_updates") or []
 
     append_updates(PROFILE_FILE, "From Chat", profile_updates)
     if profile_updates:
@@ -819,6 +841,10 @@ def apply_chat_updates(extracted: Dict[str, Any]) -> List[str]:
     append_updates(TODAY_NOTES_FILE, "From Chat", today_notes_updates)
     if today_notes_updates:
         actions.append(f"today_notes.md +{len(today_notes_updates)}")
+
+    append_updates(STATE_FILE, "From Chat", state_updates)
+    if state_updates:
+        actions.append(f"state.md +{len(state_updates)}")
 
     feedback = extracted.get("feedback") or {}
     completion = str(feedback.get("completion", "")).strip()
@@ -1120,6 +1146,7 @@ def cmd_sync_chat(args: argparse.Namespace) -> None:
         "preferences_updates": [],
         "fixed_events_updates": [],
         "today_notes_updates": [],
+        "state_updates": [],
         "feedback": {"date": "", "completion": "", "mood": "", "notes": ""},
         "summary": "",
     }
@@ -1130,6 +1157,7 @@ def cmd_sync_chat(args: argparse.Namespace) -> None:
         "preferences_updates": [],
         "fixed_events_updates": [],
         "today_notes_updates": [],
+        "state_updates": [],
         "feedback": {"date": "", "completion": "", "mood": "", "notes": ""},
         "summary": "",
     }
@@ -1196,6 +1224,7 @@ def cmd_autopilot(args: argparse.Namespace) -> None:
             "preferences_updates": [],
             "fixed_events_updates": [],
             "today_notes_updates": [],
+            "state_updates": [],
             "feedback": {"date": "", "completion": "", "mood": "", "notes": ""},
             "summary": "",
         }
@@ -1206,6 +1235,7 @@ def cmd_autopilot(args: argparse.Namespace) -> None:
             "preferences_updates": [],
             "fixed_events_updates": [],
             "today_notes_updates": [],
+            "state_updates": [],
             "feedback": {"date": "", "completion": "", "mood": "", "notes": ""},
             "summary": "",
         }
@@ -1322,7 +1352,7 @@ def run_cleanup(keep_days: int, keep_feedback: int, keep_chat_sections: int) -> 
     dropped_feedback = truncate_feedback_jsonl(max_entries=keep_feedback)
 
     compacted_files = 0
-    for path in [PROFILE_FILE, GOALS_FILE, PREFERENCES_FILE, FIXED_EVENTS_FILE, TODAY_NOTES_FILE]:
+    for path in [PROFILE_FILE, GOALS_FILE, PREFERENCES_FILE, FIXED_EVENTS_FILE, TODAY_NOTES_FILE, STATE_FILE]:
         if compact_from_chat_sections(path, keep_last=keep_chat_sections):
             compacted_files += 1
 
