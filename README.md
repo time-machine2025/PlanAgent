@@ -65,7 +65,9 @@ python3 scheduler_agent.py init
 ```bash
 python3 scheduler_agent.py sync-chat --plan-after
 python3 scheduler_agent.py adjust-today
+python3 scheduler_agent.py adjust-weekly
 python3 scheduler_agent.py window-refresh
+python3 scheduler_agent.py weekly-plan
 python3 scheduler_agent.py weekly-review
 python3 scheduler_agent.py autopilot
 python3 scheduler_agent.py autopilot --weekly
@@ -79,9 +81,14 @@ python3 scheduler_agent.py reset-data --yes
 说明：
 - `sync-chat` 会读取 `today_window.md` 里的 `## Sync Input` 区域，提取信息后写入 `user_data/` 和 `run_data/`。
 - 模型在生成计划与周复盘时会读取 `user_data/state.md` 作为额外约束上下文。
+- 分层约束：周计划（含 `weekly-plan` 与 `adjust-weekly`）会参考月计划；日计划（含 `plan` 与 `adjust-today`）会参考对应周计划。
+- 日流程联动：在 `autopilot` 与 `sync-chat --plan-after` 中，系统会先读取 `today_window.md` 的 `今日反馈` 自动微调对应周计划，再生成新的次日计划。
 - 生成日计划时，系统会自动把计划任务填入 `today_window.md` 的勾选区（用于打勾追踪完成情况）。
 - `adjust-today` 默认读取根目录 `adjust.md`，根据其中突发情况重排当天计划，并同步更新 `today_window.md` 勾选任务。
+- `adjust-weekly` 默认读取根目录 `adjust_weekly.md`，会优先重排“覆盖今天”的周计划；若无则重排最新一份周计划，并可同步更新 `today_window.md` 的本周视图。
 - `window-refresh` 会归档旧 `today_window.md` 并生成下一天窗口。
+- `weekly-plan` 会生成未来一周（默认下周一开始）的周计划到 `plans/weekly/`。
+	同时会自动把 `today_window.md` 里的 `本周视图（来自周计划）` 同步为当天对应行（可用 `--no-sync-today-window` 关闭）。
 - `weekly-review` 会基于过去数据产出周复盘到 `plans/weekly/`。
 - `autopilot` 一键串联日流程（同步 -> 次日计划 -> 刷新窗口，可选周复盘）。
 

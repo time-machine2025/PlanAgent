@@ -14,6 +14,7 @@ python3 scheduler_agent.py <command> [options]
 
 用途：初始化目录和模板文件，必要时迁移旧 `data/` 内容。
 
+分层约束：生成日计划时会自动参考目标日期对应的周计划（若存在）。
 ```bash
 python3 scheduler_agent.py init
 ```
@@ -24,17 +25,13 @@ python3 scheduler_agent.py init
 
 用途：读取 `today_window.md` 的 `## Sync Input`，提取并分解信息写入 `user_data/` 与 `run_data/`。
 
+附加行为：使用 `--plan-after` 时，会先根据 `today_window.md` 的 `今日反馈` 自动微调对应周计划，再生成次日计划。
+
 ```bash
 python3 scheduler_agent.py sync-chat
-python3 scheduler_agent.py sync-chat --plan-after
-python3 scheduler_agent.py sync-chat --plan-after --date 2026-03-11
-```
-
 常用参数：
 - `--model`：模型名称
-- `--temperature`：抽取温度
-- `--plan-after`：同步后生成次日计划
-- `--date`：配合 `--plan-after` 指定目标计划日期
+分层约束：调整日计划时会自动参考目标日期对应的周计划（若存在）。
 
 ## 3) plan
 
@@ -48,18 +45,9 @@ python3 scheduler_agent.py plan --temperature 0.25
 
 常用参数：
 - `--date`：默认是明天
-- `--model`
-- `--temperature`
-
-输出：`plans/daily/YYYY-MM-DD.md`
-
-附加行为：自动将计划任务填入 `today_window.md` 的勾选区（`今日三件最重要的事` 与 `其他任务`）。
 
 ## 4) feedback
-
-用途：手动记录反馈（可替代从 Sync Input 自动提取）。
-
-```bash
+分层约束：调整周计划时会自动参考覆盖该时间段的月计划（若存在）。
 python3 scheduler_agent.py feedback \
   --date 2026-03-10 \
   --completion "3/5" \
@@ -72,15 +60,11 @@ python3 scheduler_agent.py feedback \
 - `--completion`（必填）
 - `--mood`（必填）
 - `--notes`
-
-输出：
-- `run_data/feedback_log.jsonl`
-- `run_data/feedback/YYYY-MM-DD.md`
-
 ## 5) window-refresh
 
 用途：归档当天 `today_window.md`，并创建下一天窗口模板。
 
+分层约束：生成周计划时会自动参考覆盖该时间段的月计划（若存在）。
 ```bash
 python3 scheduler_agent.py window-refresh
 python3 scheduler_agent.py window-refresh --date 2026-03-10
@@ -114,6 +98,31 @@ python3 scheduler_agent.py adjust-today --date 2026-03-12
 - 自动更新 `today_window.md` 勾选任务
 - 写入 `run_data/sync_history/*.jsonl`
 
+## 5.6) adjust-weekly
+
+用途：当周出现突发变化时，基于当前周计划进行重排，并覆盖更新该周计划。
+
+```bash
+python3 scheduler_agent.py adjust-weekly
+python3 scheduler_agent.py adjust-weekly --start-date 2026-03-09
+python3 scheduler_agent.py adjust-weekly --start-date 2026-03-09 --days 7
+python3 scheduler_agent.py adjust-weekly --input-file ./adjust_weekly.md --no-sync-today-window
+```
+
+常用参数：
+- `--input-file`：周突发变化输入文件路径（默认 `./adjust_weekly.md`）
+- `--start-date`：目标周开始日期（默认自动匹配“覆盖今天”的周计划，若无则取最新周计划）
+- `--days`：目标周天数（默认 7）
+- `--model`
+- `--temperature`
+- `--sync-today-window` / `--no-sync-today-window`：是否同步更新 `today_window.md` 的 `本周视图（来自周计划）`（默认开启）
+
+输出：
+- 覆盖更新 `plans/weekly/start_to_end_plan.md`
+- 自动在 `run_data/snapshots/` 生成调整前周计划备份
+- 可选更新 `today_window.md` 的本周视图
+- 写入 `run_data/sync_history/*.jsonl`
+
 ## 6) weekly-review
 
 用途：基于过去 N 天计划与反馈生成周复盘。
@@ -131,16 +140,38 @@ python3 scheduler_agent.py weekly-review --end-date 2026-03-10 --days 7
 
 输出：`plans/weekly/start_to_end.md`
 
+## 6.5) weekly-plan
+
+用途：生成未来一周（默认从下周一开始）的周计划。
+
+```bash
+python3 scheduler_agent.py weekly-plan
+python3 scheduler_agent.py weekly-plan --start-date 2026-03-16
+python3 scheduler_agent.py weekly-plan --start-date 2026-03-16 --days 7 --temperature 0.25
+```
+
+常用参数：
+- `--start-date`：周计划开始日期（默认下周一）
+- `--days`：计划天数（默认 7）
+- `--model`
+- `--temperature`
+- `--sync-today-window` / `--no-sync-today-window`：是否同步更新 `today_window.md` 的 `本周视图（来自周计划）`（默认开启）
+
+输出：`plans/weekly/start_to_end_plan.md`
+
+附加行为：默认自动把 `today_window.md` 中“当前窗口日期”对应的周计划行写入 `本周视图（来自周计划）`。
+
 ## 7) autopilot
 
 用途：一键执行日常流程。
 
 流程：
 1. 同步 `Sync Input`（有内容才执行）
-2. 生成次日计划
-3. 归档并刷新 `today_window.md`
-4. 可选周复盘
-5. 默认自动清理
+2. 根据 `today_window.md` 的 `今日反馈` 自动微调对应周计划（可匹配到时）
+3. 生成次日计划
+4. 归档并刷新 `today_window.md`
+5. 可选周复盘
+6. 默认自动清理
 
 ```bash
 python3 scheduler_agent.py autopilot

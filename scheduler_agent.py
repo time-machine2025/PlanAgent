@@ -36,6 +36,7 @@ SYNC_HISTORY_DIR = RUN_DATA_DIR / "sync_history"
 SNAPSHOTS_DIR = RUN_DATA_DIR / "snapshots"
 TODAY_WINDOW_ARCHIVE_DIR = RUN_DATA_DIR / "today_window_archive"
 ADJUST_INPUT_FILE = BASE_DIR / "adjust.md"
+ADJUST_WEEKLY_INPUT_FILE = BASE_DIR / "adjust_weekly.md"
 LEGACY_INCIDENT_INPUT_FILE = RUN_DATA_DIR / "incident_input.md"
 
 TODAY_WINDOW_FILE = BASE_DIR / "today_window.md"
@@ -63,6 +64,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "plan_temperature": 0.3,
         "sync_chat_temperature": 0.1,
         "weekly_review_temperature": 0.2,
+        "weekly_plan_temperature": 0.25,
         "autopilot_temperature": 0.2,
     },
     "cleanup": {
@@ -84,6 +86,7 @@ def default_config_toml() -> str:
         "plan_temperature = 0.3\n"
         "sync_chat_temperature = 0.1\n"
         "weekly_review_temperature = 0.2\n"
+        "weekly_plan_temperature = 0.25\n"
         "autopilot_temperature = 0.2\n\n"
         "[cleanup]\n"
         f"keep_days = {DEFAULT_KEEP_DAYS}\n"
@@ -185,6 +188,11 @@ def today_window_template(target_date: dt.date | None = None) -> str:
         "- Wins: \n"
         "- Blockers: \n"
         "- Notes: \n\n"
+        "## 本周视图（来自周计划）\n"
+        "- 日期: \n"
+        "- 重点任务: \n"
+        "- 时间块建议: \n"
+        "- 备注: \n\n"
         f"{sync_input_template()}"
     )
 
@@ -285,6 +293,13 @@ def ensure_structure() -> None:
             "在这里写今天突发情况，例如：临时会议、身体不适、外出、截止时间变化等。\n",
             encoding="utf-8",
             )
+
+    if not ADJUST_WEEKLY_INPUT_FILE.exists():
+        ADJUST_WEEKLY_INPUT_FILE.write_text(
+            "# Weekly Incident Input\n\n"
+            "在这里写本周突发变化，例如：新增截止日期、固定事件变更、健康/精力变化、可用时段变化等。\n",
+            encoding="utf-8",
+        )
 
 
 def load_env_file(env_path: Path) -> None:
@@ -465,6 +480,77 @@ def load_feedback_between(start_date: dt.date, end_date: dt.date) -> List[Dict[s
     return selected
 
 
+def _extract_date_range_from_filename(path: Path) -> tuple[dt.date, dt.date] | None:
+    matches = re.findall(r"\d{4}-\d{2}-\d{2}", path.stem)
+    if len(matches) < 2:
+        return None
+    try:
+        start = dt.datetime.strptime(matches[0], "%Y-%m-%d").date()
+        end = dt.datetime.strptime(matches[1], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    if start > end:
+        return None
+    return start, end
+
+
+def _month_keys_between(start_date: dt.date, end_date: dt.date) -> List[str]:
+    keys: List[str] = []
+    y = start_date.year
+    m = start_date.month
+    while (y, m) <= (end_date.year, end_date.month):
+        keys.append(f"{y:04d}-{m:02d}")
+        if m == 12:
+            y += 1
+            m = 1
+        else:
+            m += 1
+    return keys
+
+
+def load_monthly_plans_for_range(start_date: dt.date, end_date: dt.date) -> List[Dict[str, str]]:
+    month_keys = set(_month_keys_between(start_date, end_date))
+    matched: List[Path] = []
+    for path in sorted(MONTHLY_PLAN_DIR.glob("*.md")):
+        stem = path.stem
+        if any(key in stem for key in month_keys):
+            matched.append(path)
+
+    # Fallback to latest monthly plan when naming convention does not include YYYY-MM.
+    if not matched:
+        all_monthly = sorted(MONTHLY_PLAN_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime)
+        if all_monthly:
+            matched = [all_monthly[-1]]
+
+    result: List[Dict[str, str]] = []
+    for path in matched:
+        result.append({"file": path.name, "content": read_text_if_exists(path)})
+    return result
+
+
+def load_weekly_plan_for_date(target_date: dt.date) -> Dict[str, str]:
+    candidates = sorted(WEEKLY_PLAN_DIR.glob("*.md"))
+    exact: Path | None = None
+    fallback: Path | None = None
+
+    for path in candidates:
+        date_range = _extract_date_range_from_filename(path)
+        if not date_range:
+            continue
+        start, end = date_range
+        if start <= target_date <= end:
+            exact = path
+            break
+
+    if not exact and candidates:
+        fallback = sorted(candidates, key=lambda p: p.stat().st_mtime)[-1]
+
+    chosen = exact or fallback
+    if not chosen:
+        return {"file": "", "content": ""}
+    return {"file": chosen.name, "content": read_text_if_exists(chosen)}
+
+
 def build_messages(target_date: dt.date) -> List[Dict[str, str]]:
     profile = read_text_if_exists(PROFILE_FILE)
     goals = read_text_if_exists(GOALS_FILE)
@@ -475,6 +561,7 @@ def build_messages(target_date: dt.date) -> List[Dict[str, str]]:
 
     feedback = load_feedback(limit=14)
     plans = load_recent_plans(limit=7)
+    weekly_plan = load_weekly_plan_for_date(target_date)
 
     system_prompt = (
         "You are a practical daily planning assistant. "
@@ -494,8 +581,10 @@ def build_messages(target_date: dt.date) -> List[Dict[str, str]]:
         },
         "recent_feedback": feedback,
         "recent_plans": plans,
+        "upper_level_weekly_plan": weekly_plan,
         "instructions": [
             "Use local context and recent feedback to adjust tomorrow's plan.",
+            "You must align the daily plan with the provided weekly plan when available.",
             "If completion was low recently, reduce workload and add recovery buffers.",
             "If mood/energy is low, schedule hard tasks during peak energy blocks only.",
             "Return Markdown in Chinese with these sections exactly:",
@@ -566,6 +655,60 @@ def build_weekly_review_messages(start_date: dt.date, end_date: dt.date) -> List
     ]
 
 
+def build_weekly_plan_messages(start_date: dt.date, end_date: dt.date) -> List[Dict[str, str]]:
+    profile = read_text_if_exists(PROFILE_FILE)
+    goals = read_text_if_exists(GOALS_FILE)
+    preferences = read_text_if_exists(PREFERENCES_FILE)
+    fixed_events = read_text_if_exists(FIXED_EVENTS_FILE)
+    today_notes = read_text_if_exists(TODAY_NOTES_FILE)
+    state = read_text_if_exists(STATE_FILE)
+
+    recent_feedback = load_feedback(limit=21)
+    recent_plans = load_recent_plans(limit=14)
+    monthly_plans = load_monthly_plans_for_range(start_date, end_date)
+
+    system_prompt = (
+        "You are a practical weekly planning assistant for personal productivity. "
+        "Create a realistic week plan that balances priorities, constraints, and energy."
+    )
+
+    user_payload = {
+        "plan_range": {
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+        },
+        "local_context": {
+            "profile_md": profile,
+            "goals_md": goals,
+            "preferences_md": preferences,
+            "fixed_events_md": fixed_events,
+            "today_notes_md": today_notes,
+            "state_md": state,
+        },
+        "recent_feedback": recent_feedback,
+        "recent_plans": recent_plans,
+        "upper_level_monthly_plans": monthly_plans,
+        "instructions": [
+            "You must align this weekly plan with the provided monthly plan(s) when available.",
+            "Return Markdown in Chinese with these sections exactly:",
+            "1) # 周计划（YYYY-MM-DD 到 YYYY-MM-DD）",
+            "2) ## 本周目标",
+            "3) ## 时间块策略",
+            "4) ## 每日重点安排",
+            "5) ## 风险与应对",
+            "6) ## 本周验收标准",
+            "For 每日重点安排, use a table: 日期 | 重点任务 | 时间块建议 | 备注.",
+            "Keep workload realistic and avoid over-planning.",
+            "Use concrete, executable tasks rather than abstract advice.",
+        ],
+    }
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, indent=2)},
+    ]
+
+
 def build_adjust_today_messages(target_date: dt.date, incident_text: str, current_plan: str, today_window: str) -> List[Dict[str, str]]:
     profile = read_text_if_exists(PROFILE_FILE)
     goals = read_text_if_exists(GOALS_FILE)
@@ -574,6 +717,7 @@ def build_adjust_today_messages(target_date: dt.date, incident_text: str, curren
     today_notes = read_text_if_exists(TODAY_NOTES_FILE)
     state = read_text_if_exists(STATE_FILE)
     feedback = load_feedback(limit=14)
+    weekly_plan = load_weekly_plan_for_date(target_date)
 
     system_prompt = (
         "You are a practical daily replanning assistant. "
@@ -594,8 +738,10 @@ def build_adjust_today_messages(target_date: dt.date, incident_text: str, curren
             "state_md": state,
         },
         "recent_feedback": feedback,
+        "upper_level_weekly_plan": weekly_plan,
         "instructions": [
             "Adjust only today's plan.",
+            "You must keep the adjusted daily plan aligned with the weekly plan when available.",
             "Keep priorities but reduce overload when needed.",
             "Return Markdown in Chinese with these sections exactly:",
             "1) # 今日调整计划（YYYY-MM-DD）",
@@ -614,6 +760,68 @@ def build_adjust_today_messages(target_date: dt.date, incident_text: str, curren
     ]
 
 
+def build_adjust_weekly_messages(
+    start_date: dt.date,
+    end_date: dt.date,
+    incident_text: str,
+    current_weekly_plan: str,
+) -> List[Dict[str, str]]:
+    profile = read_text_if_exists(PROFILE_FILE)
+    goals = read_text_if_exists(GOALS_FILE)
+    preferences = read_text_if_exists(PREFERENCES_FILE)
+    fixed_events = read_text_if_exists(FIXED_EVENTS_FILE)
+    today_notes = read_text_if_exists(TODAY_NOTES_FILE)
+    state = read_text_if_exists(STATE_FILE)
+    recent_feedback = load_feedback(limit=21)
+    recent_plans = load_recent_plans(limit=14)
+    monthly_plans = load_monthly_plans_for_range(start_date, end_date)
+
+    system_prompt = (
+        "You are a practical weekly replanning assistant. "
+        "Given unexpected incidents, adjust this week's plan realistically while preserving priorities."
+    )
+
+    user_payload = {
+        "plan_range": {
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+        },
+        "incident_text": incident_text,
+        "current_weekly_plan_markdown": current_weekly_plan,
+        "local_context": {
+            "profile_md": profile,
+            "goals_md": goals,
+            "preferences_md": preferences,
+            "fixed_events_md": fixed_events,
+            "today_notes_md": today_notes,
+            "state_md": state,
+        },
+        "recent_feedback": recent_feedback,
+        "recent_plans": recent_plans,
+        "upper_level_monthly_plans": monthly_plans,
+        "instructions": [
+            "Adjust only this week plan range.",
+            "You must keep the adjusted weekly plan aligned with the monthly plan(s) when available.",
+            "Keep priorities but reduce overload when needed.",
+            "Return Markdown in Chinese with these sections exactly:",
+            "1) # 本周调整计划（YYYY-MM-DD 到 YYYY-MM-DD）",
+            "2) ## 调整依据",
+            "3) ## 本周目标",
+            "4) ## 时间块策略",
+            "5) ## 每日重点安排",
+            "6) ## 风险与应对",
+            "7) ## 本周验收标准",
+            "For 每日重点安排, use a table: 日期 | 重点任务 | 时间块建议 | 备注.",
+            "Use concrete, executable tasks and avoid generic advice.",
+        ],
+    }
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, indent=2)},
+    ]
+
+
 def resolve_input_file(path_text: str | None) -> Path:
     if not path_text:
         return ADJUST_INPUT_FILE
@@ -621,6 +829,57 @@ def resolve_input_file(path_text: str | None) -> Path:
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
+
+
+def weekly_start_for(date_value: dt.date) -> dt.date:
+    return date_value - dt.timedelta(days=date_value.weekday())
+
+
+def resolve_weekly_plan_path_for_adjust(start_date: dt.date | None, days: int) -> tuple[Path, dt.date, dt.date]:
+    plan_files = sorted(WEEKLY_PLAN_DIR.glob("*_plan.md"), key=lambda p: p.stat().st_mtime)
+
+    if start_date is not None:
+        expected_end = start_date + dt.timedelta(days=days - 1)
+        exact = WEEKLY_PLAN_DIR / f"{start_date.isoformat()}_to_{expected_end.isoformat()}_plan.md"
+        if exact.exists():
+            return exact, start_date, expected_end
+
+        for path in plan_files:
+            date_range = _extract_date_range_from_filename(path)
+            if not date_range:
+                continue
+            if date_range[0] == start_date:
+                return path, date_range[0], date_range[1]
+
+        raise RuntimeError(
+            "Current weekly plan not found. Generate it first via: "
+            f"weekly-plan --start-date {start_date.isoformat()} --days {days}"
+        )
+
+    today = dt.date.today()
+    containing_today: List[tuple[Path, dt.date, dt.date]] = []
+    for path in plan_files:
+        date_range = _extract_date_range_from_filename(path)
+        if not date_range:
+            continue
+        range_start, range_end = date_range
+        if range_start <= today <= range_end:
+            containing_today.append((path, range_start, range_end))
+
+    if containing_today:
+        return containing_today[-1]
+
+    if plan_files:
+        latest = plan_files[-1]
+        date_range = _extract_date_range_from_filename(latest)
+        if not date_range:
+            raise RuntimeError(f"Cannot parse date range from weekly plan filename: {latest.name}")
+        return latest, date_range[0], date_range[1]
+
+    raise RuntimeError(
+        "No weekly plan found. Generate one first, e.g.: "
+        "weekly-plan --start-date 2026-03-12 --days 7"
+    )
 
 
 def extract_json_object(raw_text: str) -> Dict[str, Any]:
@@ -1085,6 +1344,106 @@ def parse_checkbox_state(window_text: str) -> Dict[str, bool]:
     return states
 
 
+def parse_today_window_date(window_text: str) -> dt.date | None:
+    m = re.search(r"^#\s*Today Window\s*\((\d{4}-\d{2}-\d{2})\)", window_text, flags=re.M)
+    if not m:
+        return None
+    try:
+        return dt.datetime.strptime(m.group(1), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def parse_today_feedback_from_window(window_text: str) -> Dict[str, str]:
+    m = re.search(r"##\s*今日反馈\n(.*?)(\n##\s|$)", window_text, flags=re.S)
+    if not m:
+        return {"completion": "", "mood": "", "wins": "", "blockers": "", "notes": ""}
+
+    block = m.group(1)
+
+    def pick(label: str) -> str:
+        p = re.search(rf"-\s*{label}:\s*(.*)", block)
+        return p.group(1).strip() if p else ""
+
+    return {
+        "completion": pick("Completion"),
+        "mood": pick("Mood"),
+        "wins": pick("Wins"),
+        "blockers": pick("Blockers"),
+        "notes": pick("Notes"),
+    }
+
+
+def has_meaningful_today_feedback(feedback: Dict[str, str]) -> bool:
+    keys = ["completion", "mood", "wins", "blockers", "notes"]
+    return any(str(feedback.get(k, "")).strip() for k in keys)
+
+
+def resolve_weekly_plan_path_for_date(target_date: dt.date) -> tuple[Path, dt.date, dt.date] | None:
+    plan_files = sorted(WEEKLY_PLAN_DIR.glob("*_plan.md"), key=lambda p: p.stat().st_mtime)
+    for path in plan_files:
+        date_range = _extract_date_range_from_filename(path)
+        if not date_range:
+            continue
+        start_date, end_date = date_range
+        if start_date <= target_date <= end_date:
+            return path, start_date, end_date
+    return None
+
+
+def auto_adjust_weekly_from_today_window(model: str, temperature: float, source: str) -> Path | None:
+    window_text = read_text_if_exists(TODAY_WINDOW_FILE)
+    if not window_text:
+        return None
+
+    window_date = parse_today_window_date(window_text) or dt.date.today()
+    feedback = parse_today_feedback_from_window(window_text)
+    if not has_meaningful_today_feedback(feedback):
+        return None
+
+    target = resolve_weekly_plan_path_for_date(window_date)
+    if not target:
+        return None
+
+    weekly_path, start_date, end_date = target
+    current_weekly_plan = read_text_if_exists(weekly_path)
+    if not current_weekly_plan:
+        return None
+
+    incident_text = (
+        "# Weekly Incident Input (Auto from Today Window)\n\n"
+        f"- Date: {window_date.isoformat()}\n"
+        f"- Completion: {feedback.get('completion', '')}\n"
+        f"- Mood: {feedback.get('mood', '')}\n"
+        f"- Wins: {feedback.get('wins', '')}\n"
+        f"- Blockers: {feedback.get('blockers', '')}\n"
+        f"- Notes: {feedback.get('notes', '')}\n"
+        "- Requirement: Please adjust only the remaining days/tasks of this week based on this daily feedback."
+    )
+
+    messages = build_adjust_weekly_messages(start_date, end_date, incident_text, current_weekly_plan)
+    updated_plan = deepseek_chat(messages, model=model, temperature=temperature)
+
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = SNAPSHOTS_DIR / f"weekly_{start_date.isoformat()}_to_{end_date.isoformat()}_before_auto_adjust_{stamp}.md"
+    backup_path.write_text(current_weekly_plan + "\n", encoding="utf-8")
+
+    weekly_path.write_text(updated_plan.strip() + "\n", encoding="utf-8")
+    fill_today_window_from_weekly_plan(start_date, updated_plan)
+
+    write_sync_history(
+        {
+            "timestamp": now_text(),
+            "source": source,
+            "week_start": start_date.isoformat(),
+            "week_end": end_date.isoformat(),
+            "weekly_plan": weekly_path.name,
+            "auto_from_today_window": True,
+        }
+    )
+    return weekly_path
+
+
 def replace_section(text: str, section_title: str, next_section_title: str, new_lines: List[str]) -> str:
     start = rf"##\s*{re.escape(section_title)}\n"
     end = rf"\n##\s*{re.escape(next_section_title)}"
@@ -1093,6 +1452,84 @@ def replace_section(text: str, section_title: str, next_section_title: str, new_
     if pattern.search(text):
         return pattern.sub(replacement, text, count=1)
     return text
+
+
+def extract_daily_focus_from_weekly_plan(plan_text: str, target_date: dt.date) -> Dict[str, str] | None:
+    m = re.search(r"##\s*每日重点安排\n(.*?)(\n##\s|$)", plan_text, flags=re.S)
+    if not m:
+        return None
+
+    block = m.group(1)
+    target = target_date.isoformat()
+
+    for line in block.splitlines():
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        if cells[0] in {"日期", "------", "------:"}:
+            continue
+        if set("".join(cells)) <= {"-", ":"}:
+            continue
+
+        date_cell = re.sub(r"\*", "", cells[0]).strip()
+        if target not in date_cell:
+            continue
+
+        return {
+            "date": target,
+            "task": re.sub(r"\*", "", cells[1]).strip(),
+            "time_block": re.sub(r"\*", "", cells[2]).strip(),
+            "note": re.sub(r"\*", "", cells[3]).strip(),
+        }
+
+    return None
+
+
+def fill_today_window_from_weekly_plan(target_date: dt.date, weekly_plan_text: str) -> Path:
+    if TODAY_WINDOW_FILE.exists():
+        window_text = TODAY_WINDOW_FILE.read_text(encoding="utf-8")
+    else:
+        window_text = today_window_template(target_date)
+
+    window_date = parse_today_window_date(window_text)
+    if window_date is None:
+        window_date = target_date
+        window_text = today_window_template(window_date)
+
+    focus = extract_daily_focus_from_weekly_plan(weekly_plan_text, window_date)
+    if focus:
+        lines = [
+            f"- 日期: {focus['date']}",
+            f"- 重点任务: {focus['task']}",
+            f"- 时间块建议: {focus['time_block']}",
+            f"- 备注: {focus['note']}",
+        ]
+    else:
+        lines = [
+            f"- 日期: {window_date.isoformat()}",
+            "- 重点任务: （本次周计划未覆盖该日期，或未提供可解析的每日重点表格行）",
+            "- 时间块建议: ",
+            "- 备注: ",
+        ]
+
+    if "## 本周视图（来自周计划）" not in window_text and "## Sync Input" in window_text:
+        window_text = window_text.replace(
+            "## Sync Input",
+            "## 本周视图（来自周计划）\n"
+            "- 日期: \n"
+            "- 重点任务: \n"
+            "- 时间块建议: \n"
+            "- 备注: \n\n"
+            "## Sync Input",
+            1,
+        )
+
+    updated = replace_section(window_text, "本周视图（来自周计划）", "Sync Input", lines)
+    TODAY_WINDOW_FILE.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    return TODAY_WINDOW_FILE
 
 
 def fill_today_window_from_plan(target_date: dt.date, plan_text: str) -> Path:
@@ -1205,6 +1642,21 @@ def cmd_sync_chat(args: argparse.Namespace) -> None:
     sync_input = _extract_sync_input_from_today_window(chat_text)
     if not has_meaningful_chat_input(sync_input):
         print("No new sync input in today_window.md")
+        if args.plan_after:
+            weekly_adjusted = auto_adjust_weekly_from_today_window(
+                model=args.model,
+                temperature=args.temperature,
+                source="sync-chat-plan-after-auto-weekly-adjust",
+            )
+            target_date = parse_date(args.date)
+            plan_messages = build_messages(target_date)
+            content = deepseek_chat(plan_messages, model=args.model, temperature=args.temperature)
+            plan_path = save_plan(target_date, content)
+            window_path = fill_today_window_from_plan(target_date, content)
+            if weekly_adjusted:
+                print(f"Adjusted weekly plan before daily plan: {weekly_adjusted}")
+            print(f"Generated plan: {plan_path}")
+            print(f"Updated today window: {window_path}")
         return
 
     form_text, free_text = split_chat_sections(sync_input)
@@ -1264,11 +1716,18 @@ def cmd_sync_chat(args: argparse.Namespace) -> None:
     print(f"Sync history: {sync_log}")
 
     if args.plan_after:
+        weekly_adjusted = auto_adjust_weekly_from_today_window(
+            model=args.model,
+            temperature=args.temperature,
+            source="sync-chat-plan-after-auto-weekly-adjust",
+        )
         target_date = parse_date(args.date)
         plan_messages = build_messages(target_date)
         content = deepseek_chat(plan_messages, model=args.model, temperature=args.temperature)
         plan_path = save_plan(target_date, content)
         window_path = fill_today_window_from_plan(target_date, content)
+        if weekly_adjusted:
+            print(f"Adjusted weekly plan before daily plan: {weekly_adjusted}")
         print(f"Generated plan: {plan_path}")
         print(f"Updated today window: {window_path}")
 
@@ -1329,6 +1788,12 @@ def cmd_autopilot(args: argparse.Namespace) -> None:
         )
         chat_synced = True
 
+    weekly_adjusted_for_daily: Path | None = auto_adjust_weekly_from_today_window(
+        model=args.model,
+        temperature=args.temperature,
+        source="autopilot-auto-weekly-adjust",
+    )
+
     plan_messages = build_messages(plan_date)
     plan_content = deepseek_chat(plan_messages, model=args.model, temperature=args.temperature)
     plan_path = save_plan(plan_date, plan_content)
@@ -1372,6 +1837,11 @@ def cmd_autopilot(args: argparse.Namespace) -> None:
     else:
         print("- Chat synced: no (no new input)")
 
+    if weekly_adjusted_for_daily:
+        print(f"- Weekly plan auto-adjusted before daily plan: {weekly_adjusted_for_daily}")
+    else:
+        print("- Weekly plan auto-adjusted before daily plan: no (no matching weekly plan or no daily feedback)")
+
     if weekly_path:
         print(f"- Weekly review: {weekly_path}")
 
@@ -1406,6 +1876,37 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
 
     print(content)
     print(f"\nSaved weekly review to: {out_path}")
+
+
+def cmd_weekly_plan(args: argparse.Namespace) -> None:
+    ensure_structure()
+
+    if args.start_date:
+        start_date = parse_date(args.start_date)
+    else:
+        today = dt.date.today()
+        days_until_next_monday = (7 - today.weekday()) % 7
+        if days_until_next_monday == 0:
+            days_until_next_monday = 7
+        start_date = today + dt.timedelta(days=days_until_next_monday)
+
+    end_date = start_date + dt.timedelta(days=args.days - 1)
+
+    messages = build_weekly_plan_messages(start_date, end_date)
+    content = deepseek_chat(messages, model=args.model, temperature=args.temperature)
+
+    filename = f"{start_date.isoformat()}_to_{end_date.isoformat()}_plan.md"
+    out_path = WEEKLY_PLAN_DIR / filename
+    out_path.write_text(content.strip() + "\n", encoding="utf-8")
+
+    synced_window: Path | None = None
+    if args.sync_today_window:
+        synced_window = fill_today_window_from_weekly_plan(start_date, content)
+
+    print(content)
+    print(f"\nSaved weekly plan to: {out_path}")
+    if synced_window:
+        print(f"Updated today window weekly view: {synced_window}")
 
 
 def cmd_adjust_today(args: argparse.Namespace) -> None:
@@ -1447,6 +1948,55 @@ def cmd_adjust_today(args: argparse.Namespace) -> None:
     print(updated_plan)
     print(f"\nAdjusted plan saved to: {plan_path}")
     print(f"Updated today window: {window_path}")
+    print(f"Sync history: {sync_log}")
+
+
+def cmd_adjust_weekly(args: argparse.Namespace) -> None:
+    ensure_structure()
+
+    requested_start = parse_date(args.start_date) if args.start_date else None
+    weekly_path, start_date, end_date = resolve_weekly_plan_path_for_adjust(requested_start, args.days)
+
+    input_path = resolve_input_file(args.input_file) if args.input_file else ADJUST_WEEKLY_INPUT_FILE
+    if not input_path.exists():
+        raise RuntimeError(f"Input file not found: {input_path}")
+
+    incident_text = read_text_if_exists(input_path)
+    if not incident_text:
+        raise RuntimeError(f"Input file is empty: {input_path}")
+
+    current_weekly_plan = read_text_if_exists(weekly_path)
+    if not current_weekly_plan:
+        raise RuntimeError(f"Weekly plan file is empty: {weekly_path}")
+
+    messages = build_adjust_weekly_messages(start_date, end_date, incident_text, current_weekly_plan)
+    updated_plan = deepseek_chat(messages, model=args.model, temperature=args.temperature)
+
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = SNAPSHOTS_DIR / f"weekly_{start_date.isoformat()}_to_{end_date.isoformat()}_before_adjust_{stamp}.md"
+    backup_path.write_text(current_weekly_plan + "\n", encoding="utf-8")
+
+    weekly_path.write_text(updated_plan.strip() + "\n", encoding="utf-8")
+
+    synced_window: Path | None = None
+    if args.sync_today_window:
+        synced_window = fill_today_window_from_weekly_plan(start_date, updated_plan)
+
+    sync_log = write_sync_history(
+        {
+            "timestamp": now_text(),
+            "source": "adjust-weekly",
+            "week_start": start_date.isoformat(),
+            "week_end": end_date.isoformat(),
+            "input_file": str(input_path),
+        }
+    )
+
+    print(updated_plan)
+    print(f"\nAdjusted weekly plan saved to: {weekly_path}")
+    print(f"Weekly plan backup: {backup_path}")
+    if synced_window:
+        print(f"Updated today window weekly view: {synced_window}")
     print(f"Sync history: {sync_log}")
 
 
@@ -1593,6 +2143,28 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
     )
     p_weekly.set_defaults(func=cmd_weekly_review)
 
+    p_weekly_plan = sub.add_parser("weekly-plan", help="Generate a weekly plan for the upcoming or specified week")
+    p_weekly_plan.add_argument("--start-date", help="Week start date in YYYY-MM-DD; default is next Monday")
+    p_weekly_plan.add_argument("--days", type=int, default=7, help="Number of days to plan, default 7")
+    p_weekly_plan.add_argument(
+        "--model",
+        default=cfg_get(config, "model", "default_model", DEFAULT_MODEL),
+        help="DeepSeek model name",
+    )
+    p_weekly_plan.add_argument(
+        "--temperature",
+        type=float,
+        default=cfg_get(config, "model", "weekly_plan_temperature", 0.25),
+        help="Sampling temperature",
+    )
+    p_weekly_plan.add_argument(
+        "--sync-today-window",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sync today's weekly focus section in today_window.md after generating weekly plan",
+    )
+    p_weekly_plan.set_defaults(func=cmd_weekly_plan)
+
     p_adjust = sub.add_parser("adjust-today", help="Adjust today's plan and today_window based on an incident file")
     p_adjust.add_argument("--input-file", help="Incident/context file path; default is ./adjust.md")
     p_adjust.add_argument("--date", help="Target date in YYYY-MM-DD; default is today")
@@ -1608,6 +2180,32 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
         help="Sampling temperature",
     )
     p_adjust.set_defaults(func=cmd_adjust_today)
+
+    p_adjust_weekly = sub.add_parser("adjust-weekly", help="Adjust weekly plan based on a weekly incident file")
+    p_adjust_weekly.add_argument("--input-file", help="Weekly incident file path; default is ./adjust_weekly.md")
+    p_adjust_weekly.add_argument(
+        "--start-date",
+        help="Week start date in YYYY-MM-DD; default auto-detects plan covering today, otherwise latest weekly plan",
+    )
+    p_adjust_weekly.add_argument("--days", type=int, default=7, help="Number of days in target week plan, default 7")
+    p_adjust_weekly.add_argument(
+        "--model",
+        default=cfg_get(config, "model", "default_model", DEFAULT_MODEL),
+        help="DeepSeek model name",
+    )
+    p_adjust_weekly.add_argument(
+        "--temperature",
+        type=float,
+        default=cfg_get(config, "model", "weekly_plan_temperature", 0.25),
+        help="Sampling temperature",
+    )
+    p_adjust_weekly.add_argument(
+        "--sync-today-window",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sync today's weekly focus section in today_window.md after weekly adjustment",
+    )
+    p_adjust_weekly.set_defaults(func=cmd_adjust_weekly)
 
     p_auto = sub.add_parser("autopilot", help="Run daily pipeline: sync chat, plan next day, refresh today window")
     p_auto.add_argument("--current-date", help="Current date in YYYY-MM-DD; default is today")

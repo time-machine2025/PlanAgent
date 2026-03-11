@@ -3,6 +3,7 @@ default_model = "deepseek-chat"
 plan_temperature = 0.3
 sync_chat_temperature = 0.1
 weekly_review_temperature = 0.2
+weekly_plan_temperature = 0.25
 autopilot_temperature = 0.2
 
 [cleanup]
